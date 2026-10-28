@@ -1,0 +1,76 @@
+-- SnowCost: Query Performance Monitoring
+-- Purpose:
+--   1. Create a query-performance audit table.
+--   2. Inspect recent query execution metrics.
+--   3. Record selected query measurements.
+--   4. Inspect table size and clustering information.
+
+USE WAREHOUSE SNOWCOST_WH;
+USE DATABASE SNOWCOST;
+
+-- 1. Create the query-performance audit table
+CREATE TABLE IF NOT EXISTS SNOWCOST.AUDIT.QUERY_PERFORMANCE_AUDIT (
+    QUERY_NAME VARCHAR,
+    QUERY_ID VARCHAR,
+    ELAPSED_SECONDS NUMBER(12,3),
+    BYTES_SCANNED NUMBER,
+    ROWS_PRODUCED NUMBER,
+    PARTITIONS_SCANNED NUMBER,
+    PARTITIONS_TOTAL NUMBER,
+    CACHE_PERCENT NUMBER(5,2),
+    RECORDED_AT TIMESTAMP_TZ DEFAULT CURRENT_TIMESTAMP()
+);
+
+-- 2. Inspect recent SELECT query history for this warehouse
+SELECT
+    QUERY_ID,
+    QUERY_TYPE,
+    EXECUTION_STATUS,
+    START_TIME,
+    TOTAL_ELAPSED_TIME / 1000.0 AS ELAPSED_SECONDS,
+    BYTES_SCANNED,
+    ROWS_PRODUCED,
+    WAREHOUSE_NAME,
+    QUERY_TEXT
+FROM TABLE(
+    INFORMATION_SCHEMA.QUERY_HISTORY(
+        END_TIME_RANGE_START => DATEADD('HOUR', -24, CURRENT_TIMESTAMP()),
+        RESULT_LIMIT => 100
+    )
+)
+WHERE WAREHOUSE_NAME = 'SNOWCOST_WH'
+  AND QUERY_TYPE = 'SELECT'
+ORDER BY START_TIME DESC;
+
+-- 3. Inspect the core table's size and row count
+SELECT
+    TABLE_SCHEMA,
+    TABLE_NAME,
+    ROW_COUNT,
+    BYTES,
+    LAST_ALTERED
+FROM SNOWCOST.INFORMATION_SCHEMA.TABLES
+WHERE TABLE_SCHEMA = 'CORE'
+  AND TABLE_NAME = 'TRANSACTIONS_CLEAN';
+
+-- 4. Inspect clustering information for the transaction timestamp
+-- This reports clustering information; it does not create a clustering key.
+SELECT SYSTEM$CLUSTERING_INFORMATION(
+    'SNOWCOST.CORE.TRANSACTIONS_CLEAN',
+    '(TRANSACTION_TS)'
+) AS CLUSTERING_INFORMATION;
+
+-- 5. Review saved performance audit measurements
+SELECT
+    QUERY_NAME,
+    QUERY_ID,
+    ELAPSED_SECONDS,
+    BYTES_SCANNED,
+    ROWS_PRODUCED,
+    PARTITIONS_SCANNED,
+    PARTITIONS_TOTAL,
+    CACHE_PERCENT,
+    RECORDED_AT
+FROM SNOWCOST.AUDIT.QUERY_PERFORMANCE_AUDIT
+ORDER BY RECORDED_AT DESC
+LIMIT 50;
