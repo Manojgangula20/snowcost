@@ -77,9 +77,7 @@ Creates the SnowCost warehouse, database, schemas, and raw transaction table.
 
 `sql/02_seed_data.sql`
 
-Generates 10,000 synthetic transaction records with randomized customers, transaction amounts, timestamps, merchant categories, statuses, and suspicious-transaction flags.
-
-Run the seed script only once on a fresh environment. Repeated execution appends more records.
+Generates 10,000 synthetic transaction records with randomized customers, transaction amounts, timestamps, merchant categories, transaction statuses, and suspicious-transaction flags. To prevent accidental duplicate seeding, the script runs only when `SNOWCOST.RAW.TRANSACTIONS` is empty and aborts if the table already contains rows. Because the data is randomized, separate fresh runs may produce different records and performance measurements.
 
 ### 3. Analytics
 
