@@ -1,4 +1,3 @@
-
 -- SnowCost: Incremental Transaction Pipeline
 -- Purpose:
 --   1. Merge staged transactions into RAW.
@@ -12,6 +11,8 @@
 
 USE WAREHOUSE SNOWCOST_WH;
 USE DATABASE SNOWCOST;
+-- Batch metadata
+SET BATCH_ID = 'INCREMENTAL_BATCH_001';
 
 -- 1. Merge staged records into RAW.
 MERGE INTO SNOWCOST.RAW.TRANSACTIONS AS target
@@ -249,3 +250,120 @@ SELECT
     END AS ID_CHECK
 FROM layer_counts
 ORDER BY LAYER_NAME;
+
+-- 6. Automated incremental batch audit.
+MERGE INTO SNOWCOST.AUDIT.INCREMENTAL_BATCH_AUDIT AS target
+USING (
+    SELECT
+        $BATCH_ID AS BATCH_ID,
+        'SNOWCOST.RAW.TRANSACTIONS_STAGE' AS SOURCE_TABLE,
+        'SNOWCOST.RAW.TRANSACTIONS' AS TARGET_TABLE,
+        (SELECT COUNT(*)
+         FROM SNOWCOST.RAW.TRANSACTIONS_STAGE) AS SOURCE_ROW_COUNT,
+        (SELECT COUNT(*)
+         FROM SNOWCOST.RAW.TRANSACTIONS) AS TARGET_ROW_COUNT
+) AS source
+ON target.BATCH_ID = source.BATCH_ID
+
+WHEN MATCHED THEN UPDATE SET
+    target.SOURCE_TABLE = source.SOURCE_TABLE,
+    target.TARGET_TABLE = source.TARGET_TABLE,
+    target.SOURCE_ROW_COUNT = source.SOURCE_ROW_COUNT,
+    target.TARGET_ROW_COUNT = source.TARGET_ROW_COUNT,
+    target.BATCH_STATUS = CASE
+        WHEN source.SOURCE_ROW_COUNT = 0
+        THEN 'FAIL'
+        WHEN EXISTS (
+            SELECT 1
+            FROM SNOWCOST.RAW.TRANSACTIONS_STAGE s
+            LEFT JOIN SNOWCOST.RAW.TRANSACTIONS r
+                ON r.TRANSACTION_ID = s.TRANSACTION_ID
+            WHERE r.TRANSACTION_ID IS NULL
+        ) THEN 'FAIL'
+
+        WHEN EXISTS (
+            SELECT 1
+            FROM SNOWCOST.RAW.TRANSACTIONS_STAGE s
+            LEFT JOIN SNOWCOST.CORE.TRANSACTIONS_CLEAN c
+                ON c.TRANSACTION_ID = s.TRANSACTION_ID
+            WHERE c.TRANSACTION_ID IS NULL
+        ) THEN 'FAIL'
+
+        WHEN (
+            SELECT COALESCE(SUM(TRANSACTION_COUNT), 0)
+            FROM SNOWCOST.MARTS.DAILY_TRANSACTION_SUMMARY
+        ) <> (
+            SELECT COUNT(*)
+            FROM SNOWCOST.CORE.TRANSACTIONS_CLEAN
+        ) THEN 'FAIL'
+
+        WHEN (
+            SELECT COALESCE(SUM(TRANSACTION_COUNT), 0)
+            FROM SNOWCOST.MARTS.DAILY_CATEGORY_SUMMARY
+        ) <> (
+            SELECT COUNT(*)
+            FROM SNOWCOST.CORE.TRANSACTIONS_CLEAN
+        ) THEN 'FAIL'
+
+        ELSE 'PASS'
+    END,
+
+    target.PROCESSED_AT = CURRENT_TIMESTAMP(),
+    target.NOTES = 'Automated pipeline run; see layer reconciliation results.'
+
+WHEN NOT MATCHED THEN INSERT (
+    BATCH_ID,
+    SOURCE_TABLE,
+    TARGET_TABLE,
+    SOURCE_ROW_COUNT,
+    TARGET_ROW_COUNT,
+    BATCH_STATUS,
+    PROCESSED_AT,
+    NOTES
+)
+VALUES (
+    source.BATCH_ID,
+    source.SOURCE_TABLE,
+    source.TARGET_TABLE,
+    source.SOURCE_ROW_COUNT,
+    source.TARGET_ROW_COUNT,
+    CASE
+        WHEN source.SOURCE_ROW_COUNT = 0 THEN 'FAIL'
+
+        WHEN EXISTS (
+            SELECT 1
+            FROM SNOWCOST.RAW.TRANSACTIONS_STAGE s
+            LEFT JOIN SNOWCOST.RAW.TRANSACTIONS r
+                ON r.TRANSACTION_ID = s.TRANSACTION_ID
+            WHERE r.TRANSACTION_ID IS NULL
+        ) THEN 'FAIL'
+
+        WHEN EXISTS (
+            SELECT 1
+            FROM SNOWCOST.RAW.TRANSACTIONS_STAGE s
+            LEFT JOIN SNOWCOST.CORE.TRANSACTIONS_CLEAN c
+                ON c.TRANSACTION_ID = s.TRANSACTION_ID
+            WHERE c.TRANSACTION_ID IS NULL
+        ) THEN 'FAIL'
+
+        WHEN (
+            SELECT COALESCE(SUM(TRANSACTION_COUNT), 0)
+            FROM SNOWCOST.MARTS.DAILY_TRANSACTION_SUMMARY
+        ) <> (
+            SELECT COUNT(*)
+            FROM SNOWCOST.CORE.TRANSACTIONS_CLEAN
+        ) THEN 'FAIL'
+
+        WHEN (
+            SELECT COALESCE(SUM(TRANSACTION_COUNT), 0)
+            FROM SNOWCOST.MARTS.DAILY_CATEGORY_SUMMARY
+        ) <> (
+            SELECT COUNT(*)
+            FROM SNOWCOST.CORE.TRANSACTIONS_CLEAN
+        ) THEN 'FAIL'
+
+        ELSE 'PASS'
+    END,
+    CURRENT_TIMESTAMP(),
+    'Automated pipeline run; see layer reconciliation results.'
+);
